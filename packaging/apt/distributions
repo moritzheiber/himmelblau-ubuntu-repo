@@ -1,0 +1,8 @@
+Origin: Himmelblau
+Label: Himmelblau
+Codename: resolute
+Suite: resolute
+Architectures: amd64
+Components: main
+Description: Unofficial Himmelblau APT repository for Ubuntu 26.04 (resolute)
+SignWith: @@FINGERPRINT@@

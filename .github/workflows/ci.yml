@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check workflow syntax
+        uses: reviewdog/action-actionlint@v1
+
+      - name: Check shell scripts
+        run: shellcheck scripts/*.sh tests/*.sh
+
+      - name: Install package test dependencies
+        run: sudo apt-get update && sudo apt-get install -y reprepro
+
+      - name: Test scripts
+        run: |
+          set -euo pipefail
+          tests/generate-signing-key.sh
+          tests/latest-stable.sh
+          tests/check-signing-key-expiry.sh
+          tests/verify-packages.sh
+
+      - name: Verify the pinned fingerprint in the README
+        shell: bash
+        run: |
+          set -euo pipefail
+          fingerprint="$(<packaging/apt/fingerprint)"
+          if [[ "$fingerprint" == REPLACE_WITH_SIGNING_KEY_FINGERPRINT ]]; then
+            grep -Fq "\`$fingerprint\`" README.md || {
+              echo "::error::README.md must document the signing key fingerprint placeholder"
+              exit 1
+            }
+            echo "::notice::Generate the signing key and replace the fingerprint placeholder before publishing"
+            exit 0
+          fi
+          [[ "$fingerprint" =~ ^[0-9A-F]{40}$ ]] || {
+            echo "::error::Set packaging/apt/fingerprint to the signing key fingerprint"
+            exit 1
+          }
+          grep -Fq "\`${fingerprint}\`" README.md || {
+            echo "::error::README.md must document the pinned APT signing key fingerprint"
+            exit 1
+          }

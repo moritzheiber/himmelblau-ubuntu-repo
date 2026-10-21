@@ -1,0 +1,184 @@
+name: Release
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  test:
+    uses: ./.github/workflows/ci.yml
+
+  check:
+    needs: test
+    runs-on: ubuntu-24.04
+    outputs:
+      latest_tag: ${{ steps.compare.outputs.latest_tag }}
+      release_needed: ${{ steps.compare.outputs.release_needed }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Find the highest stable upstream release
+        id: compare
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          latest_tag="$(gh api --paginate 'repos/himmelblau-idm/himmelblau/releases?per_page=100' |
+            scripts/latest-stable.sh)"
+          current_tag="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 \
+            --json tagName --jq '.[0].tagName // empty')"
+
+          if [[ -n "$current_tag" && ! "$current_tag" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Latest repository release has an invalid tag: ${current_tag}"
+            exit 1
+          fi
+          if [[ -n "$current_tag" && "$current_tag" != "$latest_tag" ]]; then
+            highest="$(printf '%s\n' "$current_tag" "$latest_tag" | sort -V | tail -n 1)"
+            if [[ "$highest" == "$current_tag" ]]; then
+              echo "::error::Repository release ${current_tag} is newer than upstream stable ${latest_tag}"
+              exit 1
+            fi
+          fi
+
+          if [[ "$current_tag" == "$latest_tag" ]]; then
+            release_needed=false
+            echo "Upstream stable ${latest_tag} is already published"
+          else
+            release_needed=true
+            echo "New upstream stable release: ${latest_tag}"
+          fi
+          {
+            echo "latest_tag=${latest_tag}"
+            echo "release_needed=${release_needed}"
+          } >> "$GITHUB_OUTPUT"
+
+  key-expiry:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check the signing key and warn before expiry
+        env:
+          APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected="$(<packaging/apt/fingerprint)"
+          if [[ -z "${APT_GPG_PRIVATE_KEY:-}" ]]; then
+            echo "::warning::APT_GPG_PRIVATE_KEY is not configured yet"
+            exit 0
+          fi
+          export GNUPGHOME="${RUNNER_TEMP}/gnupg"
+          mkdir -m 700 "$GNUPGHOME"
+          trap 'gpgconf --homedir "$GNUPGHOME" --kill all >/dev/null 2>&1 || true; gpgconf --homedir "$GNUPGHOME" --remove-socketdir >/dev/null 2>&1 || true; rm -rf -- "$GNUPGHOME"' EXIT
+          printf '%s' "$APT_GPG_PRIVATE_KEY" | gpg --batch --import
+          listing="$(gpg --batch --trust-model always --with-colons --list-secret-keys)"
+          actual="$(awk -F: '$1 == "fpr" && !seen++ { print $10 }' <<<"$listing")"
+          expiry="$(awk -F: '$1 == "sec" && !seen++ { print $7 }' <<<"$listing")"
+          scripts/check-signing-key-expiry.sh "$expected" "$actual" "${expiry:-0}"
+
+  package:
+    needs: check
+    if: needs.check.outputs.release_needed == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/checkout@v7
+        with:
+          repository: himmelblau-idm/himmelblau
+          ref: ${{ needs.check.outputs.latest_tag }}
+          path: upstream
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Verify tag matches the workspace version
+        env:
+          UPSTREAM_TAG: ${{ needs.check.outputs.latest_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(awk '
+            /^\[workspace\.package\]/ { in_workspace=1; next }
+            /^\[/ { in_workspace=0 }
+            in_workspace && /^version[[:space:]]*=/ {
+              gsub(/"/, "", $3)
+              print $3
+              exit
+            }
+          ' upstream/Cargo.toml)"
+          [[ "$version" == "$UPSTREAM_TAG" ]] || {
+            echo "::error::Cargo workspace version ${version} does not match tag ${UPSTREAM_TAG}"
+            exit 1
+          }
+
+      - name: Build Ubuntu 26.04 packages
+        working-directory: upstream
+        run: script -qec 'make DOCKER=docker ubuntu26.04' /dev/null
+
+      - name: Verify and collect all built packages
+        env:
+          UPSTREAM_TAG: ${{ needs.check.outputs.latest_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          scripts/verify-packages.sh "${UPSTREAM_TAG}-ubuntu26.04" upstream/packaging
+          mkdir -p dist
+          cp -- upstream/packaging/*.deb dist/
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: himmelblau-amd64-packages
+          path: dist/*.deb
+          if-no-files-found: error
+
+  release:
+    needs:
+      - check
+      - package
+    if: needs.check.outputs.release_needed == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: himmelblau-amd64-packages
+          path: dist
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM_TAG: ${{ needs.check.outputs.latest_tag }}
+        run: |
+          set -euo pipefail
+          notes="$(printf 'Ubuntu 26.04 amd64 packages built from upstream tag [%s](https://github.com/himmelblau-idm/himmelblau/releases/tag/%s).\n\nCorresponding source is available from [the upstream source archive](https://github.com/himmelblau-idm/himmelblau/archive/refs/tags/%s.tar.gz).\n' \
+            "$UPSTREAM_TAG" "$UPSTREAM_TAG" "$UPSTREAM_TAG")"
+          gh release create "$UPSTREAM_TAG" dist/*.deb \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Himmelblau ${UPSTREAM_TAG} for Ubuntu 26.04" \
+            --notes "$notes"
+
+  publish:
+    needs:
+      - check
+      - key-expiry
+      - release
+    if: needs.check.outputs.release_needed == 'true'
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/apt-repo.yml
+    secrets: inherit

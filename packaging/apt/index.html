@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Himmelblau APT repository</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 46rem; margin: 3rem auto; padding: 0 1rem; line-height: 1.5; }
+  code, pre { font-family: ui-monospace, monospace; }
+  pre { background: #f4f4f4; padding: 1rem; border-radius: 8px; overflow-x: auto; }
+  .fingerprint { overflow-wrap: anywhere; }
+</style>
+</head>
+<body>
+<h1>Himmelblau APT repository</h1>
+<p>Unofficial packages for Ubuntu 26.04 (resolute), amd64.</p>
+
+<h2>Install</h2>
+<pre><code>curl -fsSL @@REPO_URL@@/himmelblau.gpg | sudo tee /etc/apt/keyrings/himmelblau.gpg &gt; /dev/null
+sudo curl -fsSL @@REPO_URL@@/himmelblau.sources -o /etc/apt/sources.list.d/himmelblau.sources
+sudo apt update
+sudo apt install himmelblau</code></pre>
+
+<h2>Verify</h2>
+<p>Fingerprint: <code class="fingerprint">@@FINGERPRINT@@</code></p>
+<p>Signing keys: <a href="himmelblau.gpg">binary keyring</a> and <a href="himmelblau.asc">ASCII key</a>.</p>
+
+<h2>Source</h2>
+<p>This repository is an independent rebuild of the upstream <a href="https://github.com/himmelblau-idm/himmelblau">Himmelblau project</a>.</p>
+<p>Packages were built from upstream tag <a href="https://github.com/himmelblau-idm/himmelblau/releases/tag/@@UPSTREAM_TAG@@">@@UPSTREAM_TAG@@</a>. The corresponding <a href="@@SOURCE_URL@@">source archive</a> is available from upstream.</p>
+</body>
+</html>

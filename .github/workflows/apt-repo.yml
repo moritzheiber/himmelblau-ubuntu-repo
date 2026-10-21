@@ -1,0 +1,94 @@
+name: APT repository
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apt-repo
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install reprepro
+        run: sudo apt-get update && sudo apt-get install -y reprepro
+
+      - name: Download the latest release packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p incoming
+          tag="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)"
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern '*.deb' --dir incoming
+          shopt -s nullglob
+          packages=(incoming/*.deb)
+          ((${#packages[@]} > 0)) || {
+            echo "::error::Release ${tag} contains no Debian package assets"
+            exit 1
+          }
+          echo "Publishing ${#packages[@]} package(s) from ${tag}"
+          echo "UPSTREAM_TAG=${tag}" >> "$GITHUB_ENV"
+
+      - name: Import and verify the archive signing key
+        env:
+          APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected="$(<packaging/apt/fingerprint)"
+          export GNUPGHOME="${RUNNER_TEMP}/gnupg"
+          mkdir -m 700 "$GNUPGHOME"
+          printf '%s' "$APT_GPG_PRIVATE_KEY" | gpg --batch --import
+          listing="$(gpg --batch --trust-model always --with-colons --list-secret-keys)"
+          actual="$(awk -F: '$1 == "fpr" && !seen++ { print $10 }' <<<"$listing")"
+          expiry="$(awk -F: '$1 == "sec" && !seen++ { print $7 }' <<<"$listing")"
+          scripts/check-signing-key-expiry.sh "$expected" "$actual" "${expiry:-0}"
+          echo "GNUPGHOME=${GNUPGHOME}" >> "$GITHUB_ENV"
+          echo "FINGERPRINT=${actual}" >> "$GITHUB_ENV"
+
+      - name: Build and sign the latest-only APT repository
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'gpgconf --homedir "$GNUPGHOME" --kill all >/dev/null 2>&1 || true; gpgconf --homedir "$GNUPGHOME" --remove-socketdir >/dev/null 2>&1 || true; rm -rf -- "$GNUPGHOME"' EXIT
+          base="reprepro"
+          site="site"
+          mkdir -p "${base}/conf" "$site"
+          sed "s/@@FINGERPRINT@@/${FINGERPRINT}/" packaging/apt/distributions > "${base}/conf/distributions"
+          reprepro -b "$base" includedeb resolute incoming/*.deb
+          scripts/verify-packages.sh "${UPSTREAM_TAG}-ubuntu26.04" incoming \
+            "${base}/dists/resolute/main/binary-amd64/Packages"
+          cp -r "${base}/dists" "${base}/pool" "$site/"
+          gpg --batch --export "$FINGERPRINT" > "${site}/himmelblau.gpg"
+          gpg --batch --armor --export "$FINGERPRINT" > "${site}/himmelblau.asc"
+          url="https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}"
+          source_url="https://github.com/himmelblau-idm/himmelblau/archive/refs/tags/${UPSTREAM_TAG}.tar.gz"
+          sed "s#@@REPO_URL@@#${url}#g" packaging/apt/himmelblau.sources > "${site}/himmelblau.sources"
+          sed -e "s#@@REPO_URL@@#${url}#g" \
+            -e "s#@@FINGERPRINT@@#${FINGERPRINT}#g" \
+            -e "s#@@UPSTREAM_TAG@@#${UPSTREAM_TAG}#g" \
+            -e "s#@@SOURCE_URL@@#${source_url}#g" \
+            packaging/apt/index.html > "${site}/index.html"
+          touch "${site}/.nojekyll"
+
+      - uses: actions/configure-pages@v6
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+      - id: deploy
+        uses: actions/deploy-pages@v5
