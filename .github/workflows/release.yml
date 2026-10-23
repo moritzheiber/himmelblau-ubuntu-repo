@@ -18,7 +18,7 @@ jobs:
 
   check:
     needs: test
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     outputs:
       latest_tag: ${{ steps.compare.outputs.latest_tag }}
       release_needed: ${{ steps.compare.outputs.release_needed }}
@@ -62,7 +62,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
   key-expiry:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
 
@@ -89,7 +89,7 @@ jobs:
   package:
     needs: check
     if: needs.check.outputs.release_needed == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
 
@@ -147,7 +147,7 @@ jobs:
       - check
       - package
     if: needs.check.outputs.release_needed == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       contents: write
     steps:

@@ -134,13 +134,13 @@ gpg --batch --armor --export-secret-keys "$fpr" |
 log info "stored private key as repository secret" secret="$secret_name" repo="$repo"
 
 if ! mv -- "$new_fingerprint_file" "$fingerprint_file"; then
-    die "private key is stored, but the fingerprint pin was not updated; set ${fingerprint_file} to ${fpr}"
+    die "private key stored; set ${fingerprint_file} and README fingerprint to ${fpr}"
 fi
 if ! mv -- "$new_readme_file" "$readme_file"; then
     if cp -- "$previous_fingerprint_file" "$fingerprint_file"; then
-        die "private key is stored, README was not updated, and the fingerprint pin was restored; replace the old README fingerprint with ${fpr}"
+        die "private key stored; fingerprint pin restored; set README fingerprint to ${fpr}"
     fi
-    die "private key is stored, but local updates are partial: set ${fingerprint_file} to ${fpr} and replace the old README fingerprint with ${fpr}"
+    die "private key stored; set ${fingerprint_file} and README fingerprint to ${fpr}"
 fi
 log info "updated signing key fingerprint" fingerprint="$fpr"
 

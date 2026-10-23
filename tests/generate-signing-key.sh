@@ -3,6 +3,9 @@ set -euo pipefail
 
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 source_script="$root/scripts/generate-signing-key.sh"
+placeholder="REPLACE_WITH_SIGNING_KEY_FINGERPRINT"
+old_fingerprint="1123456789ABCDEF0123456789ABCDEF01234567"
+other_fingerprint="2123456789ABCDEF0123456789ABCDEF01234567"
 
 tmpbase="${TMPDIR:-$root/.test-tmp}"
 mkdir -p -- "$tmpbase"
@@ -18,6 +21,7 @@ bystander="$work/bystander"
 cleanup() {
     stop_agent "$verify"
     stop_agent "$bystander"
+    chmod -R u+rwx -- "$work" 2>/dev/null || true
     rm -rf -- "$work"
     [[ "$tmpbase" != "$root/.test-tmp" ]] || rmdir -- "$tmpbase" 2>/dev/null || true
 }
@@ -28,12 +32,19 @@ stop_agent() {
 }
 trap cleanup EXIT
 
+# Keep the test README and pin independent of the repository fingerprint.
+readme_with() {
+    printf '# Fixture\n\nThe archive signing key fingerprint is %s.\n\nUnrelated text stays untouched.\n' "\`$1\`"
+}
+
+# Build a fixture with the selected pin and documented fingerprint.
 reset_fixture() {
+    local pin="${1:-$placeholder}"
     rm -rf -- "$fixture_root"
     mkdir -p "$fixture_root/scripts" "$fixture_root/packaging/apt"
     cp -- "$source_script" "$script"
-    cp -- "$root/README.md" "$fixture_root/README.md"
-    cp -- "$root/packaging/apt/fingerprint" "$fixture_root/packaging/apt/fingerprint"
+    printf '%s\n' "$pin" >"$fixture_root/packaging/apt/fingerprint"
+    readme_with "${2:-$pin}" >"$fixture_root/README.md"
 }
 
 failures=0
@@ -46,7 +57,24 @@ fail() {
     failures=$((failures + 1))
 }
 
-# The script under test must only ever talk to this stub, never to GitHub.
+# Check the fixture pin and README.
+assert_fixture() {
+    [[ "$(<"$fixture_root/packaging/apt/fingerprint")" == "$1" ]] ||
+        fail "unexpected fingerprint pin: $(<"$fixture_root/packaging/apt/fingerprint")"
+    [[ "$(<"$fixture_root/README.md")" == "$(readme_with "${2:-$1}")" ]] || fail "unexpected README content"
+}
+
+# Check whether directory permissions restrict writes.
+permissions_enforced() {
+    local probe="$work/probe" enforced=true
+    mkdir -m 555 -- "$probe"
+    ! touch -- "$probe/file" 2>/dev/null || enforced=false
+    chmod 755 -- "$probe"
+    rm -rf -- "$probe"
+    [[ "$enforced" == true ]]
+}
+
+# Route GitHub commands through this stub.
 mkdir -p "$bin" "$work/only-gh" "$work/only-gpg"
 cat >"$bin/gh" <<'EOF'
 #!/usr/bin/env bash
@@ -62,6 +90,7 @@ case "$1 ${2:-}" in
         [[ "${STUB_GH_FAIL:-}" != secret ]] || { echo "gh: HTTP 403" >&2; exit 1; }
         printf '%s\n' "$@" >"$STUB_GH_RECORD/args"
         mv "$STUB_GH_RECORD/input" "$STUB_GH_RECORD/secret"
+        [[ -z "${STUB_GH_LOCK:-}" ]] || chmod 555 "$STUB_GH_LOCK"
         ;;
     *)
         echo "unexpected gh call: $*" >&2
@@ -165,34 +194,19 @@ caps="$(field sec 12)"
 [[ "$caps" == *s* && "$caps" != *e* ]] || fail "key is not signing-only: $caps"
 [[ $(($(field sec 7) - $(field sec 6))) -eq $((30 * 86400)) ]] || fail "key lifetime is not 30 days"
 grep -qF "fingerprint=$fingerprint" "$work/stderr" || fail "fingerprint was not logged"
-[[ "$(<"$fixture_root/packaging/apt/fingerprint")" == "$fingerprint" ]] ||
-    fail "fingerprint pin was not updated"
-grep -Fq -- "\`$fingerprint\`" "$fixture_root/README.md" ||
-    fail "README fingerprint was not updated"
-! grep -Fq 'REPLACE_WITH_SIGNING_KEY_FINGERPRINT' "$fixture_root/README.md" ||
-    fail "README placeholder was not replaced"
+assert_fixture "$fingerprint"
 ! grep -qv '^level=' "$work/stderr" || fail "stderr contains lines that are not log records"
 assert_no_private_key_output
 assert_keyring_cleaned_up
 
-case_name="updates an existing pin and README fingerprint during key rotation"
-reset_fixture
-old_fingerprint="1123456789ABCDEF0123456789ABCDEF01234567"
-printf '%s\n' "$old_fingerprint" > "$fixture_root/packaging/apt/fingerprint"
-awk -v placeholder=REPLACE_WITH_SIGNING_KEY_FINGERPRINT -v fingerprint="$old_fingerprint" \
-    '{ gsub(placeholder, fingerprint); print }' "$fixture_root/README.md" > "$work/README.md"
-mv -- "$work/README.md" "$fixture_root/README.md"
+case_name="rotates the pin and README fingerprint of an existing key"
+reset_fixture "$old_fingerprint"
 run --keep-fixture KEY_NAME="Rotated Key" KEY_EMAIL="rotation@example.invalid"
 [[ $status -eq 0 ]] || fail "exit status $status"
 fingerprint="$(<"$work/stdout")"
 [[ "$fingerprint" =~ ^[0-9A-F]{40}$ && "$fingerprint" != "$old_fingerprint" ]] ||
     fail "unexpected rotated fingerprint: $fingerprint"
-[[ "$(<"$fixture_root/packaging/apt/fingerprint")" == "$fingerprint" ]] ||
-    fail "fingerprint pin was not rotated"
-grep -Fq -- "\`$fingerprint\`" "$fixture_root/README.md" ||
-    fail "README fingerprint was not rotated"
-! grep -Fq -- "$old_fingerprint" "$fixture_root/README.md" ||
-    fail "README still contains the old fingerprint"
+assert_fixture "$fingerprint"
 import_stored_key || fail "stored rotated key is not importable"
 [[ "$(field fpr 10)" == "$fingerprint" ]] || fail "stored secret does not match the rotated fingerprint"
 assert_no_private_key_output
@@ -230,27 +244,46 @@ case_name="fails when the secret cannot be stored"
 run STUB_GH_FAIL=secret
 assert_failed 'msg="storing the private key failed"'
 [[ -s "$record/gnupghome" ]] || fail "failure did not occur at the upload step"
-[[ "$(<"$fixture_root/packaging/apt/fingerprint")" == REPLACE_WITH_SIGNING_KEY_FINGERPRINT ]] ||
-    fail "fingerprint pin changed although secret storage failed"
-grep -Fq 'REPLACE_WITH_SIGNING_KEY_FINGERPRINT' "$fixture_root/README.md" ||
-    fail "README changed although secret storage failed"
+assert_fixture "$placeholder"
+
+if permissions_enforced; then
+    case_name="reports the manual steps when the pin cannot be updated after the secret was stored"
+    reset_fixture
+    run --keep-fixture STUB_GH_LOCK="$fixture_root/packaging/apt"
+    chmod -R u+rwx -- "$fixture_root"
+    [[ $status -ne 0 ]] || fail "expected a non-zero exit status"
+    [[ -s "$record/secret" ]] || fail "the secret was not stored"
+    grep -qF 'private key stored; set' "$work/stderr" ||
+        fail "missing recovery message"
+    assert_fixture "$placeholder"
+    assert_no_private_key_output
+    assert_keyring_cleaned_up
+
+    case_name="restores the pin when the README cannot be updated after the secret was stored"
+    reset_fixture
+    run --keep-fixture STUB_GH_LOCK="$fixture_root"
+    chmod -R u+rwx -- "$fixture_root"
+    [[ $status -ne 0 ]] || fail "expected a non-zero exit status"
+    [[ -s "$record/secret" ]] || fail "the secret was not stored"
+    grep -qF 'fingerprint pin restored' "$work/stderr" ||
+        fail "missing recovery message"
+    assert_fixture "$placeholder"
+    assert_no_private_key_output
+    assert_keyring_cleaned_up
+else
+    echo "skipped - local update failures: this filesystem does not enforce permissions" >&2
+fi
 
 case_name="fails when the repository cannot be resolved"
 run STUB_GH_FAIL=repo
 assert_failed 'msg="cannot resolve the target repository'
 
-case_name="rejects a README without the current fingerprint before generating a key"
-rm -rf -- "$tmp" "$record"
-mkdir -p "$tmp" "$record"
-reset_fixture
-printf '%s\n' 1123456789ABCDEF0123456789ABCDEF01234567 > "$fixture_root/packaging/apt/fingerprint"
-if env -u KEY_NAME -u KEY_EMAIL -u KEY_LIFETIME PATH="$bin:$PATH" GH_REPO=other-owner/other-repo \
-    STUB_GH_RECORD="$record" TMPDIR="$tmp" "$BASH" "$script" >"$work/stdout" 2>"$work/stderr"; then
-    fail "expected a non-zero exit status"
-fi
-grep -qF 'README does not contain the pinned fingerprint' "$work/stderr" ||
-    fail "missing README preflight error"
-[[ ! -e "$record/secret" ]] || fail "a secret was stored despite README preflight failure"
+case_name="rejects a README that does not document the pinned fingerprint"
+reset_fixture "$old_fingerprint" "$other_fingerprint"
+run --keep-fixture GH_REPO=other-owner/other-repo
+assert_failed 'README does not contain the pinned fingerprint'
+assert_fixture "$old_fingerprint" "$other_fingerprint"
+[[ ! -s "$record/gnupghome" ]] || fail "a key was generated despite the failed preflight"
 
 case_name="fails without gpg"
 run PATH="$work/only-gh"

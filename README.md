@@ -15,7 +15,7 @@ sudo apt install himmelblau
 
 The archive signing key fingerprint is `B563445F0C1712C32DDB87632EA11CE5BE133BAE`. Verify it with `gpg --show-keys /etc/apt/keyrings/himmelblau.gpg`.
 
-GitHub releases contain the package files. The corresponding source archive is linked from each release and from the APT repository page.
+GitHub releases contain the package files. Each release and the APT repository page link to the source archive for that upstream tag.
 
 ## Packages
 
@@ -33,11 +33,11 @@ Every `.deb` produced by the upstream Ubuntu 26.04 build is included in the GitH
 - `himmelblau-orchestrator`
 - `o365`
 
-Additional packages can be installed individually, for example `sudo apt install himmelblau-sso`. The package set follows upstream rather than a fixed allowlist.
+Additional packages can be installed individually, for example `sudo apt install himmelblau-sso`. The repository package set matches the files produced by upstream's Ubuntu 26.04 build.
 
 ## Maintainers
 
-The daily Release workflow checks for the highest stable upstream `X.Y.Z` tag, builds the Ubuntu 26.04 packages with the upstream Make target, and creates a GitHub release when a newer version is available. Every built package must match the release version and amd64 architecture. The APT workflow verifies that the generated package index matches the complete release package set by name, version, and architecture before deployment. Each deploy replaces the repository contents with only that release's packages. Source archives remain available from the corresponding upstream tags.
+The daily Release workflow checks for the highest stable upstream `X.Y.Z` tag, builds the Ubuntu 26.04 packages with the upstream Make target, and creates a GitHub release when a newer version is available. Every built package must match the release version and amd64 architecture. Before deployment, the APT workflow checks that the generated package index contains every release package with the expected name, version, and architecture. The APT archive contains packages from the latest release. Source archives remain available from their upstream tags.
 
 ### Signing key
 
@@ -49,7 +49,7 @@ scripts/generate-signing-key.sh
 
 The script requires an authenticated `gh` with permission to set repository secrets. It updates the local pin and README only after GitHub confirms that the private key was stored, and prints the fingerprint. Review and commit the updated files. The default key identity uses `github@heiber.im` and expires after two years; set `KEY_EMAIL`, `KEY_NAME`, or `KEY_LIFETIME` to override them.
 
-The APT workflow derives and publishes the public key from the secret; no public key file is stored in the repository. The workflows compare the imported secret with `packaging/apt/fingerprint`. The daily workflow warns when the key is within 60 days of expiry and stops APT publication after it expires. Users must fetch the new signing key after a key rotation.
+The APT workflow derives the public key from the secret and publishes it with the archive. The workflows compare the imported secret with the fingerprint in `packaging/apt/fingerprint`. The daily workflow warns when the key has 60 days or less before expiry and stops APT publication after it expires. After a key rotation, users need to fetch the new signing key.
 
 Enable GitHub Pages with the GitHub Actions source:
 
