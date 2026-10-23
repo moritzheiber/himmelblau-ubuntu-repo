@@ -70,7 +70,7 @@ jobs:
           site="site"
           mkdir -p "${base}/conf" "$site"
           sed "s/@@FINGERPRINT@@/${FINGERPRINT}/" packaging/apt/distributions > "${base}/conf/distributions"
-          reprepro -b "$base" includedeb resolute incoming/*.deb
+          scripts/include-packages.sh "$base" incoming/*.deb
           scripts/verify-packages.sh "${UPSTREAM_TAG}-ubuntu26.04" incoming \
             "${base}/dists/resolute/main/binary-amd64/Packages"
           cp -r "${base}/dists" "${base}/pool" "$site/"

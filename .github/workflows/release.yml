@@ -122,9 +122,21 @@ jobs:
             exit 1
           }
 
+      - name: Cache Cargo build output
+        uses: actions/cache@v6
+        with:
+          path: upstream/target/ubuntu26.04
+          key: cargo-ubuntu26.04-${{ runner.arch }}-v1-${{ hashFiles('upstream/Makefile', 'upstream/scripts/gen_dockerfiles.py') }}-${{ hashFiles('upstream/Cargo.lock') }}-${{ needs.check.outputs.latest_tag }}
+          restore-keys: |
+            cargo-ubuntu26.04-${{ runner.arch }}-v1-${{ hashFiles('upstream/Makefile', 'upstream/scripts/gen_dockerfiles.py') }}-${{ hashFiles('upstream/Cargo.lock') }}-
+            cargo-ubuntu26.04-${{ runner.arch }}-v1-${{ hashFiles('upstream/Makefile', 'upstream/scripts/gen_dockerfiles.py') }}-
+
       - name: Build Ubuntu 26.04 packages
         working-directory: upstream
         run: script -qec 'make DOCKER=docker ubuntu26.04' /dev/null
+
+      - name: Prepare build output for caching
+        run: sudo chown -R --no-dereference "$(id -u):$(id -g)" upstream/target/ubuntu26.04
 
       - name: Verify and collect all built packages
         env:

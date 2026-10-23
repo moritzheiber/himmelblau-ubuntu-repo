@@ -39,6 +39,10 @@ Additional packages can be installed individually, for example `sudo apt install
 
 The daily Release workflow checks for the highest stable upstream `X.Y.Z` tag, builds the Ubuntu 26.04 packages with the upstream Make target, and creates a GitHub release when a newer version is available. Every built package must match the release version and amd64 architecture. Before deployment, the APT workflow checks that the generated package index contains every release package with the expected name, version, and architecture. The APT archive contains packages from the latest release. Source archives remain available from their upstream tags.
 
+The APT index preserves each package's section and priority, using `misc` and `optional` for missing values.
+
+The build workflow caches `upstream/target/ubuntu26.04` between releases. Cache keys include the architecture, upstream build recipe, lockfile, and release tag. Cargo checks restored output during each build. GitHub evicts caches after seven days without use.
+
 ### Signing key
 
 Generate the repository's ed25519 key, store its private half as the `APT_GPG_PRIVATE_KEY` repository secret, and update the local fingerprint pin and this README:
