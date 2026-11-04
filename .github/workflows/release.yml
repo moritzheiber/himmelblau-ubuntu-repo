@@ -200,7 +200,7 @@ jobs:
             "$releases" "$UPSTREAM_TAG" "$UPSTREAM_TAG" "$UPSTREAM_TAG")"
           title="Himmelblau ${UPSTREAM_TAG} for Ubuntu"
           if gh release view "$UPSTREAM_TAG" --repo "$GITHUB_REPOSITORY" > /dev/null; then
-            gh release upload "$UPSTREAM_TAG" dist/*.deb --repo "$GITHUB_REPOSITORY"
+            gh release upload "$UPSTREAM_TAG" dist/*.deb --repo "$GITHUB_REPOSITORY" --clobber
             gh release edit "$UPSTREAM_TAG" --repo "$GITHUB_REPOSITORY" --title "$title" --notes "$notes"
           else
             gh release create "$UPSTREAM_TAG" dist/*.deb \
