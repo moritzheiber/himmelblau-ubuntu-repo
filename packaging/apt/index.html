@@ -13,11 +13,11 @@
 </head>
 <body>
 <h1>Himmelblau APT repository</h1>
-<p>Unofficial packages for Ubuntu 26.04 (resolute), amd64.</p>
+<p>Unofficial amd64 packages for @@RELEASES@@.</p>
 
 <h2>Install</h2>
 <pre><code>curl -fsSL @@REPO_URL@@/himmelblau.gpg | sudo tee /etc/apt/keyrings/himmelblau.gpg &gt; /dev/null
-sudo curl -fsSL @@REPO_URL@@/himmelblau.sources -o /etc/apt/sources.list.d/himmelblau.sources
+sudo curl -fsSL "@@REPO_URL@@/himmelblau-$(. /etc/os-release &amp;&amp; echo "$VERSION_CODENAME").sources" -o /etc/apt/sources.list.d/himmelblau.sources
 sudo apt update
 sudo apt install himmelblau</code></pre>
 

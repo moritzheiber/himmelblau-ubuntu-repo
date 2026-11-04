@@ -21,7 +21,8 @@ jobs:
     runs-on: ubuntu-26.04
     outputs:
       latest_tag: ${{ steps.compare.outputs.latest_tag }}
-      release_needed: ${{ steps.compare.outputs.release_needed }}
+      build_matrix: ${{ steps.compare.outputs.build_matrix }}
+      build_needed: ${{ steps.compare.outputs.build_needed }}
     steps:
       - uses: actions/checkout@v7
 
@@ -50,15 +51,24 @@ jobs:
           fi
 
           if [[ "$current_tag" == "$latest_tag" ]]; then
-            release_needed=false
-            echo "Upstream stable ${latest_tag} is already published"
+            gh release view "$current_tag" --repo "$GITHUB_REPOSITORY" \
+              --json assets --jq '.assets[].name' > "${RUNNER_TEMP}/assets"
+            build_matrix="$(scripts/ubuntu-releases.sh packaging/apt/releases "${RUNNER_TEMP}/assets")"
           else
-            release_needed=true
-            echo "New upstream stable release: ${latest_tag}"
+            build_matrix="$(scripts/ubuntu-releases.sh packaging/apt/releases)"
+          fi
+
+          if [[ "$build_matrix" == "[]" ]]; then
+            build_needed=false
+            echo "Upstream stable ${latest_tag} is already published for every Ubuntu release"
+          else
+            build_needed=true
+            echo "Building upstream stable ${latest_tag} for: $(jq -r 'map(.version) | join(", ")' <<<"$build_matrix")"
           fi
           {
             echo "latest_tag=${latest_tag}"
-            echo "release_needed=${release_needed}"
+            echo "build_matrix=${build_matrix}"
+            echo "build_needed=${build_needed}"
           } >> "$GITHUB_OUTPUT"
 
   key-expiry:
@@ -87,9 +97,15 @@ jobs:
           scripts/check-signing-key-expiry.sh "$expected" "$actual" "${expiry:-0}"
 
   package:
+    name: package (Ubuntu ${{ matrix.version }})
     needs: check
-    if: needs.check.outputs.release_needed == 'true'
+    if: needs.check.outputs.build_needed == 'true'
     runs-on: ubuntu-26.04
+    strategy:
+      matrix:
+        include: ${{ fromJSON(needs.check.outputs.build_matrix) }}
+    env:
+      TARGET: ubuntu${{ matrix.version }}
     steps:
       - uses: actions/checkout@v7
 
@@ -125,18 +141,18 @@ jobs:
       - name: Cache Cargo build output
         uses: actions/cache@v6
         with:
-          path: upstream/target/ubuntu26.04
-          key: cargo-ubuntu26.04-${{ runner.arch }}-v1-${{ hashFiles('upstream/Makefile', 'upstream/scripts/gen_dockerfiles.py') }}-${{ hashFiles('upstream/Cargo.lock') }}-${{ needs.check.outputs.latest_tag }}
+          path: upstream/target/${{ env.TARGET }}
+          key: cargo-${{ env.TARGET }}-${{ runner.arch }}-v1-${{ hashFiles('upstream/Makefile', 'upstream/scripts/gen_dockerfiles.py') }}-${{ hashFiles('upstream/Cargo.lock') }}-${{ needs.check.outputs.latest_tag }}
           restore-keys: |
-            cargo-ubuntu26.04-${{ runner.arch }}-v1-${{ hashFiles('upstream/Makefile', 'upstream/scripts/gen_dockerfiles.py') }}-${{ hashFiles('upstream/Cargo.lock') }}-
-            cargo-ubuntu26.04-${{ runner.arch }}-v1-${{ hashFiles('upstream/Makefile', 'upstream/scripts/gen_dockerfiles.py') }}-
+            cargo-${{ env.TARGET }}-${{ runner.arch }}-v1-${{ hashFiles('upstream/Makefile', 'upstream/scripts/gen_dockerfiles.py') }}-${{ hashFiles('upstream/Cargo.lock') }}-
+            cargo-${{ env.TARGET }}-${{ runner.arch }}-v1-${{ hashFiles('upstream/Makefile', 'upstream/scripts/gen_dockerfiles.py') }}-
 
-      - name: Build Ubuntu 26.04 packages
+      - name: Build Ubuntu ${{ matrix.version }} packages
         working-directory: upstream
-        run: script -qec 'make DOCKER=docker ubuntu26.04' /dev/null
+        run: script -qec "make DOCKER=docker ${TARGET}" /dev/null
 
       - name: Prepare build output for caching
-        run: sudo chown -R --no-dereference "$(id -u):$(id -g)" upstream/target/ubuntu26.04
+        run: sudo chown -R --no-dereference "$(id -u):$(id -g)" "upstream/target/${TARGET}"
 
       - name: Verify and collect all built packages
         env:
@@ -144,13 +160,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          scripts/verify-packages.sh "${UPSTREAM_TAG}-ubuntu26.04" upstream/packaging
+          scripts/verify-packages.sh "${UPSTREAM_TAG}-${TARGET}" upstream/packaging
           mkdir -p dist
           cp -- upstream/packaging/*.deb dist/
 
       - uses: actions/upload-artifact@v7
         with:
-          name: himmelblau-amd64-packages
+          name: himmelblau-${{ env.TARGET }}-amd64-packages
           path: dist/*.deb
           if-no-files-found: error
 
@@ -158,36 +174,48 @@ jobs:
     needs:
       - check
       - package
-    if: needs.check.outputs.release_needed == 'true'
+    if: needs.check.outputs.build_needed == 'true'
     runs-on: ubuntu-26.04
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v7
+
       - uses: actions/download-artifact@v8
         with:
-          name: himmelblau-amd64-packages
+          pattern: himmelblau-*-amd64-packages
+          merge-multiple: true
           path: dist
 
-      - name: Create the GitHub release
+      - name: Create or extend the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
           UPSTREAM_TAG: ${{ needs.check.outputs.latest_tag }}
+        shell: bash
         run: |
           set -euo pipefail
-          notes="$(printf 'Ubuntu 26.04 amd64 packages built from upstream tag [%s](https://github.com/himmelblau-idm/himmelblau/releases/tag/%s).\n\nCorresponding source is available from [the upstream source archive](https://github.com/himmelblau-idm/himmelblau/archive/refs/tags/%s.tar.gz).\n' \
-            "$UPSTREAM_TAG" "$UPSTREAM_TAG" "$UPSTREAM_TAG")"
-          gh release create "$UPSTREAM_TAG" dist/*.deb \
-            --repo "$GITHUB_REPOSITORY" \
-            --target "$GITHUB_SHA" \
-            --title "Himmelblau ${UPSTREAM_TAG} for Ubuntu 26.04" \
-            --notes "$notes"
+          releases="$(scripts/ubuntu-releases.sh packaging/apt/releases |
+            jq -r 'map("Ubuntu \(.version) (\(.codename))") | join(", ")')"
+          notes="$(printf 'amd64 packages for %s built from upstream tag [%s](https://github.com/himmelblau-idm/himmelblau/releases/tag/%s).\n\nCorresponding source is available from [the upstream source archive](https://github.com/himmelblau-idm/himmelblau/archive/refs/tags/%s.tar.gz).\n' \
+            "$releases" "$UPSTREAM_TAG" "$UPSTREAM_TAG" "$UPSTREAM_TAG")"
+          title="Himmelblau ${UPSTREAM_TAG} for Ubuntu"
+          if gh release view "$UPSTREAM_TAG" --repo "$GITHUB_REPOSITORY" > /dev/null; then
+            gh release upload "$UPSTREAM_TAG" dist/*.deb --repo "$GITHUB_REPOSITORY"
+            gh release edit "$UPSTREAM_TAG" --repo "$GITHUB_REPOSITORY" --title "$title" --notes "$notes"
+          else
+            gh release create "$UPSTREAM_TAG" dist/*.deb \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "$title" \
+              --notes "$notes"
+          fi
 
   publish:
     needs:
       - check
       - key-expiry
       - release
-    if: needs.check.outputs.release_needed == 'true'
+    if: needs.check.outputs.build_needed == 'true'
     permissions:
       contents: read
       pages: write

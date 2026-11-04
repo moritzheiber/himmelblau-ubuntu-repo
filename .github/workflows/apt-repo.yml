@@ -30,18 +30,15 @@ jobs:
       - name: Download the latest release packages
         env:
           GH_TOKEN: ${{ github.token }}
+        shell: bash
         run: |
           set -euo pipefail
-          mkdir -p incoming
           tag="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)"
-          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern '*.deb' --dir incoming
-          shopt -s nullglob
-          packages=(incoming/*.deb)
-          ((${#packages[@]} > 0)) || {
-            echo "::error::Release ${tag} contains no Debian package assets"
-            exit 1
-          }
-          echo "Publishing ${#packages[@]} package(s) from ${tag}"
+          patterns=()
+          while read -r version; do
+            patterns+=(--pattern "*-ubuntu${version}_amd64.deb")
+          done < <(scripts/ubuntu-releases.sh packaging/apt/releases | jq -r '.[].version')
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" "${patterns[@]}" --dir incoming
           echo "UPSTREAM_TAG=${tag}" >> "$GITHUB_ENV"
 
       - name: Import and verify the archive signing key
@@ -68,21 +65,24 @@ jobs:
           trap 'gpgconf --homedir "$GNUPGHOME" --kill all >/dev/null 2>&1 || true; gpgconf --homedir "$GNUPGHOME" --remove-socketdir >/dev/null 2>&1 || true; rm -rf -- "$GNUPGHOME"' EXIT
           base="reprepro"
           site="site"
-          mkdir -p "${base}/conf" "$site"
-          sed "s/@@FINGERPRINT@@/${FINGERPRINT}/" packaging/apt/distributions > "${base}/conf/distributions"
-          scripts/include-packages.sh "$base" incoming/*.deb
-          scripts/verify-packages.sh "${UPSTREAM_TAG}-ubuntu26.04" incoming \
-            "${base}/dists/resolute/main/binary-amd64/Packages"
+          mkdir -p "$site"
+          scripts/build-apt-repository.sh packaging/apt/releases "$UPSTREAM_TAG" "$FINGERPRINT" incoming "$base"
           cp -r "${base}/dists" "${base}/pool" "$site/"
           gpg --batch --export "$FINGERPRINT" > "${site}/himmelblau.gpg"
           gpg --batch --armor --export "$FINGERPRINT" > "${site}/himmelblau.asc"
           url="https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}"
           source_url="https://github.com/himmelblau-idm/himmelblau/archive/refs/tags/${UPSTREAM_TAG}.tar.gz"
-          sed "s#@@REPO_URL@@#${url}#g" packaging/apt/himmelblau.sources > "${site}/himmelblau.sources"
+          releases="$(scripts/ubuntu-releases.sh packaging/apt/releases)"
+          while read -r codename; do
+            sed -e "s#@@REPO_URL@@#${url}#g" -e "s#@@CODENAME@@#${codename}#g" \
+              packaging/apt/himmelblau.sources > "${site}/himmelblau-${codename}.sources"
+          done < <(jq -r '.[].codename' <<<"$releases")
+          supported="$(jq -r 'map("Ubuntu \(.version) (\(.codename))") | join(", ")' <<<"$releases")"
           sed -e "s#@@REPO_URL@@#${url}#g" \
             -e "s#@@FINGERPRINT@@#${FINGERPRINT}#g" \
             -e "s#@@UPSTREAM_TAG@@#${UPSTREAM_TAG}#g" \
             -e "s#@@SOURCE_URL@@#${source_url}#g" \
+            -e "s#@@RELEASES@@#${supported}#g" \
             packaging/apt/index.html > "${site}/index.html"
           touch "${site}/.nojekyll"
 

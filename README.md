@@ -1,14 +1,14 @@
 # Himmelblau APT repository
 
-This unofficial repository provides the latest stable Himmelblau packages for Ubuntu 26.04 (resolute), amd64. Packages are built from upstream stable tags and published under the upstream version.
+This unofficial repository provides the latest stable Himmelblau packages for amd64 on Ubuntu 24.04 (noble) and Ubuntu 26.04 (resolute). Packages are built from upstream stable tags and published under the upstream version with the upstream release suffix, for example `4.0.7-ubuntu24.04`.
 
 ## Install
 
-Add the signing key and APT source, then install:
+Add the signing key and the APT source for your Ubuntu release, then install:
 
 ```console
 curl -fsSL https://moritzheiber.github.io/himmelblau-ubuntu-repo/himmelblau.gpg | sudo tee /etc/apt/keyrings/himmelblau.gpg > /dev/null
-sudo curl -fsSL https://moritzheiber.github.io/himmelblau-ubuntu-repo/himmelblau.sources -o /etc/apt/sources.list.d/himmelblau.sources
+sudo curl -fsSL "https://moritzheiber.github.io/himmelblau-ubuntu-repo/himmelblau-$(. /etc/os-release && echo "$VERSION_CODENAME").sources" -o /etc/apt/sources.list.d/himmelblau.sources
 sudo apt update
 sudo apt install himmelblau
 ```
@@ -19,7 +19,7 @@ GitHub releases contain the package files. Each release and the APT repository p
 
 ## Packages
 
-Every `.deb` produced by the upstream Ubuntu 26.04 build is included in the GitHub release and the APT repository. For upstream `4.0.7`, these are:
+Every `.deb` produced by the upstream Ubuntu builds is included in the GitHub release and the APT repository. For upstream `4.0.7`, these are:
 
 - `himmelblau`
 - `nss-himmelblau`
@@ -33,15 +33,19 @@ Every `.deb` produced by the upstream Ubuntu 26.04 build is included in the GitH
 - `himmelblau-orchestrator`
 - `o365`
 
-Additional packages can be installed individually, for example `sudo apt install himmelblau-sso`. The repository package set matches the files produced by upstream's Ubuntu 26.04 build.
+Additional packages can be installed individually, for example `sudo apt install himmelblau-sso`. Each distribution's package set matches the files produced by upstream's build for that Ubuntu release.
 
 ## Maintainers
 
-The daily Release workflow checks for the highest stable upstream `X.Y.Z` tag, builds the Ubuntu 26.04 packages with the upstream Make target, and creates a GitHub release when a newer version is available. Every built package must match the release version and amd64 architecture. Before deployment, the APT workflow checks that the generated package index contains every release package with the expected name, version, and architecture. The APT archive contains packages from the latest release. Source archives remain available from their upstream tags.
+`packaging/apt/releases` lists the supported Ubuntu releases, one `VERSION CODENAME` pair per line. Each release maps to the upstream Make target `ubuntuVERSION` and the APT distribution `CODENAME`.
+
+The daily Release workflow checks for the highest stable upstream `X.Y.Z` tag and builds packages for every listed release in parallel with the upstream Make targets. For a new tag, it creates a GitHub release with all packages. When the latest GitHub release has no packages for a listed release, the workflow builds them and adds them to that release. Every built package must match the release version, Ubuntu suffix and amd64 architecture.
+
+The APT workflow publishes one signed distribution per listed release and one `himmelblau-CODENAME.sources` file per distribution. Each package goes to the distribution matching its version suffix. Before deployment, it checks that each distribution's package index contains every package for that release with the expected name, version, and architecture. The APT archive contains packages from the latest release. Source archives remain available from their upstream tags.
 
 The APT index preserves each package's section and priority, using `misc` and `optional` for missing values.
 
-The build workflow caches `upstream/target/ubuntu26.04` between releases. Cache keys include the architecture, upstream build recipe, lockfile, and release tag. Cargo checks restored output during each build. GitHub evicts caches after seven days without use.
+The build workflow caches `upstream/target/ubuntuVERSION` per release between builds. Cache keys include the Ubuntu release, architecture, upstream build recipe, lockfile, and release tag. Cargo checks restored output during each build. GitHub evicts caches after seven days without use.
 
 ### Signing key
 

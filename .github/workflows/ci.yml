@@ -35,7 +35,9 @@ jobs:
           tests/generate-signing-key.sh
           tests/latest-stable.sh
           tests/check-signing-key-expiry.sh
+          tests/ubuntu-releases.sh
           tests/verify-packages.sh
+          tests/build-apt-repository.sh
 
       - name: Verify the pinned fingerprint in the README
         shell: bash
